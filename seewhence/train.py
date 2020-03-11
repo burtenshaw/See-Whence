@@ -1,5 +1,6 @@
 import time
 import torch
+from torchtext import data
 
 def binary_accuracy(preds, y):
     rounded_preds = torch.round(torch.sigmoid(preds))
@@ -18,7 +19,7 @@ def epoch_time(start_time, end_time):
     return elapsed_mins, elapsed_secs
 
 
-def train(model, iterator, optimizer, criterion, acc=binary_accuracy):
+def train(model, iterator, optimizer, criterion):
     
     epoch_loss = 0
     epoch_acc = 0
@@ -70,12 +71,25 @@ def evaluate(model, iterator, criterion):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def predict(model, tokenizer, sentence):
+def get_iterators(train_data, test_data, BATCH_SIZE = 128):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    train_iterator, test_iterator = data.BucketIterator.splits(
+        (train_data, test_data), 
+        batch_size = BATCH_SIZE,
+        sort_key=lambda x: len(x.text),
+        sort_within_batch = True,
+        device = device)
+    return train_iterator, test_iterator
+
+def predict(model, iterator):
     model.eval()
-    tokens = tokenizer.tokenize(sentence)
-    tokens = tokens[:max_input_length-2]
-    indexed = [init_token_idx] + tokenizer.convert_tokens_to_ids(tokens) + [eos_token_idx]
-    tensor = torch.LongTensor(indexed).to(device)
-    tensor = tensor.unsqueeze(0)
-    prediction = torch.round(torch.sigmoid(model(tensor)))
-    return prediction.item()
+    y=[]
+    with torch.no_grad():
+        for batch in iterator:
+            preds = [round(x[0],2) for x in torch.sigmoid(model(batch)).tolist()]
+            labels = batch.label.tolist()
+            indexes = batch.index
+            y.extend(list(zip(indexes,
+                              labels,
+                              preds)))
+    return y

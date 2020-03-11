@@ -67,6 +67,16 @@ class RNN(nn.Module):
             
         return self.fc(hidden)
     
+    def load_weights(self, pretrained_embeddings, PAD_IDX, UNK_IDX, EMBEDDING_DIM):
+        self.embedding.weight.data.copy_(pretrained_embeddings)
+        self.embedding.weight.data[UNK_IDX] = torch.zeros(EMBEDDING_DIM)
+        self.embedding.weight.data[PAD_IDX] = torch.zeros(EMBEDDING_DIM)
+    
+    def weight_reset(self):
+        for name, m in self.named_children():
+            if isinstance(m, nn.LSTM) or isinstance(m, nn.Linear):
+                m.reset_parameters()
+    
     
 class EmojiLSTM(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim, n_layers, 
@@ -186,8 +196,105 @@ class LSTM(nn.Module):
         feature = hidden[-1, :, :]
         
         for layer in self.linear_layers:
-          feature = layer(feature)
+            feature = layer(feature)
         
         output = self.out(feature)
                 
         return output
+    
+class HashtagEmojiLSTM(nn.Module):
+    def __init__(self, 
+                 vocab_size, 
+                 embedding_dim, 
+                 hidden_dim, 
+                 output_dim, 
+                 n_layers, 
+                 bidirectional, 
+                 dropout, 
+                 pad_idx, 
+                 emoji_vocab_size, 
+                 emoji_embedding_dim,
+                 hashtag_vocab_size,
+                 hashtag_embedding_dim,
+                 embedding_dropout=0
+                
+                ):
+        super().__init__()
+        
+        self.text_embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx = pad_idx)
+        self.emoji_embedding = nn.Embedding(emoji_vocab_size, emoji_embedding_dim, padding_idx = pad_idx)
+        self.hashtag_embedding = nn.Embedding(hashtag_vocab_size, hashtag_embedding_dim, padding_idx = pad_idx)
+        
+        self.lstm_dim = embedding_dim
+        self.rnn = nn.LSTM(self.lstm_dim, 
+                           hidden_dim, 
+                           num_layers=n_layers, 
+                           bidirectional=bidirectional, 
+                           dropout=dropout)
+        
+        self.fc = nn.Linear(hidden_dim * 2, output_dim)
+        
+        self.dropout = nn.Dropout(embedding_dropout)
+    
+        
+    def forward(self, batch):
+        text, text_lengths = batch.text
+        emoji = batch.emoji
+        hashtag = batch.hashtags
+        
+        text_embedded = self.text_embedding(text)
+        emoji_embedded = self.emoji_embedding(emoji)
+        hashtag_embedded = self.hashtag_embedding(hashtag)
+
+        embedded = torch.cat([text_embedded,emoji_embedded, hashtag_embedded])
+        
+        self.dropout(embedded)
+        
+        packed_embedded = nn.utils.rnn.pack_padded_sequence(embedded, text_lengths)
+        
+        packed_output, (hidden, cell) = self.rnn(packed_embedded)
+        output, output_lengths = nn.utils.rnn.pad_packed_sequence(packed_output)
+        
+        hidden = torch.cat((hidden[-2,:,:], hidden[-1,:,:]), dim = 1)
+        
+        linear = self.fc(hidden)
+        
+        return linear
+    
+       
+    def load_weights(self,text_weights, emoji_weights, hashtag_weights, UNK_IDX, PAD_IDX, EMBEDDING_DIM=300):
+        self.text_embedding.weight.data.copy_(text_weights)
+        self.text_embedding.weight.data[UNK_IDX] = torch.zeros(EMBEDDING_DIM)
+        self.text_embedding.weight.data[PAD_IDX] = torch.zeros(EMBEDDING_DIM)
+
+        self.emoji_embedding.weight.data.copy_(emoji_weights)
+        self.emoji_embedding.weight.data[UNK_IDX] = torch.zeros(EMBEDDING_DIM)
+        self.emoji_embedding.weight.data[PAD_IDX] = torch.zeros(EMBEDDING_DIM)
+
+        self.hashtag_embedding.weight.data.copy_(hashtag_weights)
+        self.hashtag_embedding.weight.data[UNK_IDX] = torch.zeros(EMBEDDING_DIM)
+        self.hashtag_embedding.weight.data[PAD_IDX] = torch.zeros(EMBEDDING_DIM)
+        
+    def weight_reset(self):
+        for name, m in self.named_children():
+            if isinstance(m, nn.LSTM) or isinstance(m, nn.Linear):
+                m.reset_parameters()
+#     class GenerateTweets(nn.Module):
+#         def __init__(self, n_vocab, seq_size, embedding_size, lstm_size):
+#             super(RNNModule, self).__init__()
+#             self.seq_size = seq_size
+#             self.lstm_size = lstm_size
+#             self.embedding = nn.Embedding(n_vocab, embedding_size)
+#             self.lstm = nn.LSTM(embedding_size,
+#                                 lstm_size,
+#                                 batch_first=False)
+#             self.dense = nn.Linear(lstm_size, n_vocab)
+#         def forward(self, x, prev_state):
+#             embed = self.embedding(x)
+#             output, state = self.lstm(embed, prev_state)
+#             logits = self.dense(output)
+
+#             return logits, state
+#         def zero_state(self, batch_size):
+#             return (torch.zeros(1, batch_size, self.lstm_size),
+#                     torch.zeros(1, batch_size, self.lstm_size))
